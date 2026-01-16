@@ -1,0 +1,62 @@
+#!/bin/bash
+set -e
+
+ZABBIX_SERVERS="192.168.1.2,172.16.103.23"
+HOSTNAME=$(hostname)
+
+# Detect OS
+OS_ID=$(grep ^ID= /etc/os-release | cut -d= -f2 | tr -d '"')
+OS_VERSION=$(grep VERSION_ID /etc/os-release | cut -d= -f2 | tr -d '"')
+MAJOR_VERSION=${OS_VERSION%%.*}
+
+echo "Detected OS: $OS_ID $OS_VERSION"
+
+# Stop agent
+systemctl stop zabbix-agent 2>/dev/null || true
+systemctl disable zabbix-agent 2>/dev/null || true
+
+# Remove packages
+dnf remove -y zabbix-agent zabbix-release || true
+
+# Cleanup
+rm -rf /etc/zabbix /var/log/zabbix /var/lib/zabbix /var/run/zabbix
+rm -f /etc/yum.repos.d/zabbix.repo
+dnf clean all
+rm -rf /var/cache/dnf
+
+# Select correct repo
+if [[ "$OS_ID" =~ (rocky|rhel|almalinux|centos) ]]; then
+    if [[ "$MAJOR_VERSION" == "9" ]]; then
+        REPO_URL="https://repo.zabbix.com/zabbix/7.2/release/rocky/9/noarch/zabbix-release-latest-7.2.el9.noarch.rpm"
+    elif [[ "$MAJOR_VERSION" == "8" ]]; then
+        REPO_URL="https://repo.zabbix.com/zabbix/7.2/release/rocky/8/noarch/zabbix-release-latest-7.2.el8.noarch.rpm"
+    else
+        echo "Unsupported EL version"
+        exit 1
+    fi
+elif [[ "$OS_ID" == "fedora" ]]; then
+    REPO_URL="https://repo.zabbix.com/zabbix/7.2/release/fedora/${MAJOR_VERSION}/noarch/zabbix-release-latest-7.2.fc${MAJOR_VERSION}.noarch.rpm"
+else
+    echo "Unsupported OS"
+    exit 1
+fi
+
+# Install repo
+rpm -Uvh $REPO_URL
+dnf clean all
+dnf makecache
+
+# Install agent
+dnf install -y zabbix-agent
+
+# Configure agent
+cp /etc/zabbix/zabbix_agentd.conf /etc/zabbix/zabbix_agentd.conf.bak
+sed -i "s/^Server=.*/Server=${ZABBIX_SERVERS}/" /etc/zabbix/zabbix_agentd.conf
+sed -i "s/^ServerActive=.*/ServerActive=${ZABBIX_SERVERS}/" /etc/zabbix/zabbix_agentd.conf
+sed -i "s/^Hostname=.*/Hostname=${HOSTNAME}/" /etc/zabbix/zabbix_agentd.conf
+
+# Start agent
+systemctl daemon-reexec
+systemctl enable --now zabbix-agent
+
+systemctl status zabbix-agent --no-pager
