@@ -1,0 +1,72 @@
+#!/bin/bash
+
+set -e
+
+ZABBIX_SERVERS="192.168.1.2,172.16.103.23"
+HOSTNAME=$(hostname)
+
+echo "===== ZABBIX FULL CLEAN UNINSTALL ====="
+
+# Stop and disable agent
+systemctl stop zabbix-agent 2>/dev/null || true
+systemctl disable zabbix-agent 2>/dev/null || true
+
+# Remove Zabbix packages
+dnf remove -y zabbix-agent zabbix-release || true
+
+# Remove leftovers
+rm -rf /etc/zabbix
+rm -rf /var/log/zabbix
+rm -rf /var/lib/zabbix
+rm -rf /var/run/zabbix
+rm -f /etc/yum.repos.d/zabbix.repo
+
+# Clean cache
+dnf clean all
+rm -rf /var/cache/dnf
+
+echo "===== UNINSTALL COMPLETED ====="
+
+echo "===== ZABBIX INSTALL START ====="
+
+# Install Zabbix repo
+rpm -Uvh https://repo.zabbix.com/zabbix/7.2/release/rocky/9/noarch/zabbix-release-latest-7.2.el9.noarch.rpm
+
+dnf clean all
+dnf makecache
+
+# Install agent
+dnf install -y zabbix-agent
+
+echo "===== CONFIGURING ZABBIX AGENT ====="
+
+# Backup default config
+cp /etc/zabbix/zabbix_agentd.conf /etc/zabbix/zabbix_agentd.conf.bak
+
+# Set Server, ServerActive, Hostname
+sed -i "s/^Server=.*/Server=${ZABBIX_SERVERS}/" /etc/zabbix/zabbix_agentd.conf
+sed -i "s/^ServerActive=.*/ServerActive=${ZABBIX_SERVERS}/" /etc/zabbix/zabbix_agentd.conf
+sed -i "s/^Hostname=.*/Hostname=${HOSTNAME}/" /etc/zabbix/zabbix_agentd.conf
+
+# Ensure parameters exist (if commented)
+grep -q "^Server=" /etc/zabbix/zabbix_agentd.conf || echo "Server=${ZABBIX_SERVERS}" >> /etc/zabbix/zabbix_agentd.conf
+grep -q "^ServerActive=" /etc/zabbix/zabbix_agentd.conf || echo "ServerActive=${ZABBIX_SERVERS}" >> /etc/zabbix/zabbix_agentd.conf
+grep -q "^Hostname=" /etc/zabbix/zabbix_agentd.conf || echo "Hostname=${HOSTNAME}" >> /etc/zabbix/zabbix_agentd.conf
+
+# Fix permissions
+chown zabbix:zabbix /etc/zabbix/zabbix_agentd.conf
+chmod 644 /etc/zabbix/zabbix_agentd.conf
+
+# Remove stale PID
+rm -f /run/zabbix/zabbix_agentd.pid /var/run/zabbix/zabbix_agentd.pid
+
+echo "===== STARTING ZABBIX AGENT ====="
+
+systemctl daemon-reexec
+systemctl enable --now zabbix-agent
+
+echo "===== FINAL STATUS ====="
+systemctl status zabbix-agent --no-pager
+
+echo "===== INSTALLED PACKAGES ====="
+rpm -qa | grep zabbix
